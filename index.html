@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pipecat Sarvam Bot</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; margin-top: 50px; background: #1a1a1a; color: #fff; }
+        #status { font-size: 20px; margin: 20px; color: #aaa; }
+        button { padding: 12px 24px; font-size: 16px; cursor: pointer; background: #4CAF50; color: white; border: none; border-radius: 6px; }
+        button:disabled { background: #555; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <h1>Pipecat Sarvam Bot</h1>
+    <p id="status">Ready to connect</p>
+    <button id="connect-btn">Connect</button>
+    <audio id="audio-el" autoplay></audio>
+
+    <script>
+        const statusEl = document.getElementById("status");
+        const buttonEl = document.getElementById("connect-btn");
+        const audioEl = document.getElementById("audio-el");
+
+        let peerConnection = null;
+
+        // Helper to send ICE candidates to the server
+        const sendIceCandidate = async (pc, candidate) => {
+            await fetch('/api/offer', {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    pc_id: pc.pc_id,
+                    candidates: [{
+                        candidate: candidate.candidate,
+                        sdp_mid: candidate.sdpMid,
+                        sdp_mline_index: candidate.sdpMLineIndex
+                    }]
+                })
+            });
+        };
+
+        const createConnection = async (audioTrack) => {
+            const config = {
+                iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+            };
+            const pc = new RTCPeerConnection(config);
+            
+            pc.pendingIceCandidates = [];
+            pc.canSendIceCandidates = false;
+
+            // Handle Audio from Bot
+            pc.ontrack = e => {
+                audioEl.srcObject = e.streams[0];
+                statusEl.innerText = "✅ Connected! Speak now.";
+            };
+
+            pc.onicecandidate = async (event) => {
+                if (event.candidate) {
+                    if (pc.canSendIceCandidates && pc.pc_id) {
+                        await sendIceCandidate(pc, event.candidate);
+                    } else {
+                        pc.pendingIceCandidates.push(event.candidate);
+                    }
+                }
+            };
+
+            // Add Mic
+            pc.addTransceiver(audioTrack, { direction: 'sendrecv' });
+
+            // Create Offer
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            // Send to Server
+            const response = await fetch('/api/offer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sdp: offer.sdp, type: offer.type }),
+            });
+
+            const answer = await response.json();
+            pc.pc_id = answer.pc_id; // Store ID for ICE patches
+            await pc.setRemoteDescription(answer);
+
+            // Flush pending ICE candidates
+            pc.canSendIceCandidates = true;
+            for (const candidate of pc.pendingIceCandidates) {
+                await sendIceCandidate(pc, candidate);
+            }
+            pc.pendingIceCandidates = [];
+
+            return pc;
+        };
+
+        buttonEl.addEventListener("click", async () => {
+            statusEl.innerText = "Requesting Microphone...";
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            statusEl.innerText = "Connecting...";
+            peerConnection = await createConnection(stream.getAudioTracks()[0]);
+            buttonEl.disabled = true;
+        });
+    </script>
+</body>
+</html>
